@@ -23,11 +23,11 @@ function getWindDirectionLabel(degrees: number): string {
   return directions[index];
 }
 
-function getWBGTLevel(wbgt: number): { label: string; variant: string } {
+function getWBGTLevel(wbgt: number): { label: string; variant: string; style?: React.CSSProperties } {
   if (wbgt < 21) return { label: 'ほぼ安全', variant: 'success' };
   if (wbgt < 25) return { label: '注意', variant: 'info' };
   if (wbgt < 28) return { label: '警戒', variant: 'warning' };
-  if (wbgt < 31) return { label: '厳重警戒', variant: 'orange' };
+  if (wbgt < 31) return { label: '厳重警戒', variant: 'dark', style: { backgroundColor: '#fd7e14', color: '#fff' } };
   return { label: '危険', variant: 'danger' };
 }
 
@@ -60,7 +60,11 @@ const WindWeatherCharts: React.FC<WindWeatherChartsProps> = ({ data }) => {
       <Card className="shadow-sm">
         <Card.Header className="bg-warning text-dark fw-bold py-2 d-flex justify-content-between align-items-center">
           <span>🌡️ WBGT 暑さ指数</span>
-          <Badge bg={wbgtLevel.variant === 'orange' ? 'warning' : wbgtLevel.variant} text={wbgtLevel.variant === 'warning' || wbgtLevel.variant === 'orange' ? 'dark' : undefined}>
+          <Badge
+            bg={wbgtLevel.variant}
+            text={wbgtLevel.variant === 'warning' ? 'dark' : undefined}
+            style={wbgtLevel.style}
+          >
             {wbgtLevel.label}
           </Badge>
         </Card.Header>
