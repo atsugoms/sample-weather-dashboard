@@ -1,5 +1,19 @@
 import { useEffect, useMemo, useState } from 'react';
+import {
+  CategoryScale,
+  Chart as ChartJS,
+  Filler,
+  Legend,
+  LineElement,
+  LinearScale,
+  PointElement,
+  Tooltip,
+  type ChartOptions,
+} from 'chart.js';
+import { Line } from 'react-chartjs-2';
 import './App.css';
+
+ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend, Filler);
 
 type Period = '7d' | '48h';
 
@@ -13,16 +27,21 @@ type Location = {
 type WeatherMetric = {
   value: number | null;
   unit: string;
-  updatedAt: string;
+  targetAt: string;
 };
 
-type WeatherSummary = {
+type ForecastPoint = {
+  label: string;
   temperature: WeatherMetric;
   humidity: WeatherMetric;
   rain: WeatherMetric;
   wbgt: WeatherMetric;
   windSpeed: WeatherMetric;
   windDirection: WeatherMetric;
+};
+
+type ForecastSeries = {
+  points: ForecastPoint[];
 };
 
 type RuntimeConfig = {
@@ -67,6 +86,23 @@ function toDirectionLabel(degrees: number | null): string {
   const normalized = ((degrees % 360) + 360) % 360;
   const index = Math.round(normalized / 22.5) % 16;
   return `${DIRECTION_LABELS[index]} (${normalized.toFixed(0)}deg)`;
+}
+
+function toDayKey(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function formatHourLabel(date: Date): string {
+  return `${date.getMonth() + 1}/${date.getDate()} ${String(date.getHours()).padStart(2, '0')}:00`;
+}
+
+function formatDayLabel(date: Date, isToday: boolean): string {
+  return isToday
+    ? `${date.getMonth() + 1}/${date.getDate()} (本日)`
+    : `${date.getMonth() + 1}/${date.getDate()}`;
 }
 
 function getWbgtApprox(temperature: number, humidity: number): number {
@@ -136,8 +172,110 @@ async function fetchRuntimeConfig(): Promise<RuntimeConfig> {
   }
 }
 
-async function fetchWeather(location: Location, period: Period): Promise<WeatherSummary> {
-  const forecastDays = period === '7d' ? 7 : 2;
+type HourlyPayload = {
+  time?: string[];
+  temperature_2m?: Array<number | null>;
+  relative_humidity_2m?: Array<number | null>;
+  precipitation?: Array<number | null>;
+  wind_speed_10m?: Array<number | null>;
+  wind_direction_10m?: Array<number | null>;
+};
+
+type HourlyEntry = {
+  at: Date;
+  temperature: number | null;
+  humidity: number | null;
+  rain: number | null;
+  windSpeed: number | null;
+  windDirection: number | null;
+};
+
+function createHourlyEntries(hourly?: HourlyPayload): HourlyEntry[] {
+  const times = hourly?.time ?? [];
+  const temperatures = hourly?.temperature_2m ?? [];
+  const humidities = hourly?.relative_humidity_2m ?? [];
+  const rains = hourly?.precipitation ?? [];
+  const windSpeeds = hourly?.wind_speed_10m ?? [];
+  const windDirections = hourly?.wind_direction_10m ?? [];
+
+  return times.map((time, index) => ({
+    at: new Date(time),
+    temperature: temperatures[index] ?? null,
+    humidity: humidities[index] ?? null,
+    rain: rains[index] ?? null,
+    windSpeed: windSpeeds[index] ?? null,
+    windDirection: windDirections[index] ?? null,
+  }));
+}
+
+function toMetric(value: number | null, unit: string, targetAt: string): WeatherMetric {
+  return { value, unit, targetAt };
+}
+
+function build48hSeries(entries: HourlyEntry[]): ForecastPoint[] {
+  const now = new Date();
+  const start = new Date(now);
+  start.setMinutes(0, 0, 0);
+
+  return Array.from({ length: 8 }, (_, index) => {
+    const target = new Date(start.getTime() + index * 6 * 60 * 60 * 1000);
+    const matched = entries.find((entry) => entry.at.getTime() >= target.getTime()) ?? null;
+
+    const temperature = matched?.temperature ?? null;
+    const humidity = matched?.humidity ?? null;
+    const rain = matched?.rain ?? null;
+    const windSpeed = matched?.windSpeed ?? null;
+    const windDirection = matched?.windDirection ?? null;
+    const wbgt =
+      temperature !== null && humidity !== null
+        ? getWbgtApprox(temperature, humidity)
+        : null;
+
+    return {
+      label: index === 0 ? '現在' : formatHourLabel(target),
+      temperature: toMetric(temperature, 'degC', target.toISOString()),
+      humidity: toMetric(humidity, '%', target.toISOString()),
+      rain: toMetric(rain, 'mm/h', target.toISOString()),
+      wbgt: toMetric(wbgt, 'degC', target.toISOString()),
+      windSpeed: toMetric(windSpeed, 'm/s', target.toISOString()),
+      windDirection: toMetric(windDirection, 'deg', target.toISOString()),
+    };
+  });
+}
+
+function build7dSeries(entries: HourlyEntry[]): ForecastPoint[] {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  return Array.from({ length: 7 }, (_, index) => {
+    const day = new Date(today.getTime() + index * 24 * 60 * 60 * 1000);
+    const dayKey = toDayKey(day);
+    const dayEntries = entries.filter((entry) => toDayKey(entry.at) === dayKey);
+
+    const temperature = average(dayEntries.map((entry) => entry.temperature));
+    const humidity = average(dayEntries.map((entry) => entry.humidity));
+    const rain = dayEntries.reduce<number>((sum, entry) => sum + (entry.rain ?? 0), 0);
+    const windSpeed = average(dayEntries.map((entry) => entry.windSpeed));
+    const windDirection = average(dayEntries.map((entry) => entry.windDirection));
+    const wbgt =
+      temperature !== null && humidity !== null
+        ? getWbgtApprox(temperature, humidity)
+        : null;
+
+    return {
+      label: formatDayLabel(day, index === 0),
+      temperature: toMetric(temperature, 'degC', day.toISOString()),
+      humidity: toMetric(humidity, '%', day.toISOString()),
+      rain: toMetric(dayEntries.length ? rain : null, 'mm/day', day.toISOString()),
+      wbgt: toMetric(wbgt, 'degC', day.toISOString()),
+      windSpeed: toMetric(windSpeed, 'm/s', day.toISOString()),
+      windDirection: toMetric(windDirection, 'deg', day.toISOString()),
+    };
+  });
+}
+
+async function fetchWeather(location: Location, period: Period): Promise<ForecastSeries> {
+  const forecastDays = period === '7d' ? 7 : 3;
   const url = new URL('https://api.open-meteo.com/v1/forecast');
   url.searchParams.set('latitude', String(location.lat));
   url.searchParams.set('longitude', String(location.lon));
@@ -150,43 +288,10 @@ async function fetchWeather(location: Location, period: Period): Promise<Weather
     throw new Error('気象情報の取得に失敗しました');
   }
 
-  const body = (await response.json()) as {
-    hourly?: {
-      time?: string[];
-      temperature_2m?: Array<number | null>;
-      relative_humidity_2m?: Array<number | null>;
-      precipitation?: Array<number | null>;
-      wind_speed_10m?: Array<number | null>;
-      wind_direction_10m?: Array<number | null>;
-    };
-  };
-
-  const hourly = body.hourly;
-  const lastIndex = (hourly?.time?.length ?? 1) - 1;
-  const latestTime = hourly?.time?.[lastIndex] ?? '-';
-
-  const temperatureAvg = average(hourly?.temperature_2m ?? []);
-  const humidityAvg = average(hourly?.relative_humidity_2m ?? []);
-  const rainSum = (hourly?.precipitation ?? []).reduce<number>(
-    (sum, value) => sum + (value ?? 0),
-    0,
-  );
-  const windSpeedAvg = average(hourly?.wind_speed_10m ?? []);
-  const windDirectionAvg = average(hourly?.wind_direction_10m ?? []);
-
-  const wbgt =
-    temperatureAvg !== null && humidityAvg !== null
-      ? getWbgtApprox(temperatureAvg, humidityAvg)
-      : null;
-
-  return {
-    temperature: { value: temperatureAvg, unit: 'degC', updatedAt: latestTime },
-    humidity: { value: humidityAvg, unit: '%', updatedAt: latestTime },
-    rain: { value: rainSum, unit: 'mm', updatedAt: latestTime },
-    wbgt: { value: wbgt, unit: 'degC', updatedAt: latestTime },
-    windSpeed: { value: windSpeedAvg, unit: 'm/s', updatedAt: latestTime },
-    windDirection: { value: windDirectionAvg, unit: 'deg', updatedAt: latestTime },
-  };
+  const body = (await response.json()) as { hourly?: HourlyPayload };
+  const entries = createHourlyEntries(body.hourly);
+  const points = period === '7d' ? build7dSeries(entries) : build48hSeries(entries);
+  return { points };
 }
 
 function formatValue(value: number | null, digits = 1): string {
@@ -201,7 +306,7 @@ function App() {
   const [selectedLocation, setSelectedLocation] = useState<Location>(DEFAULT_LOCATION);
   const [period, setPeriod] = useState<Period>(DEFAULT_PERIOD);
   const [drawingUrl, setDrawingUrl] = useState<string>('/sample-drawing.pdf');
-  const [weather, setWeather] = useState<WeatherSummary | null>(null);
+  const [weather, setWeather] = useState<ForecastSeries | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -359,26 +464,26 @@ function App() {
       <main className="row g-3 g-md-4">
         <section className="col-12 col-lg-3">
           <div className="metric-stack d-grid gap-3">
-            <MetricCard
+            <MetricChartCard
               title="気温"
-              value={weather ? formatValue(weather.temperature.value) : '-'}
-              unit={weather?.temperature.unit ?? 'degC'}
+              unit="degC"
+              points={weather?.points ?? []}
+              pickMetric={(point) => point.temperature.value}
               loading={loading}
-              updatedAt={weather?.temperature.updatedAt}
             />
-            <MetricCard
+            <MetricChartCard
               title="湿度"
-              value={weather ? formatValue(weather.humidity.value) : '-'}
-              unit={weather?.humidity.unit ?? '%'}
+              unit="%"
+              points={weather?.points ?? []}
+              pickMetric={(point) => point.humidity.value}
               loading={loading}
-              updatedAt={weather?.humidity.updatedAt}
             />
-            <MetricCard
+            <MetricChartCard
               title="降雨"
-              value={weather ? formatValue(weather.rain.value) : '-'}
-              unit={weather?.rain.unit ?? 'mm'}
+              unit={period === '7d' ? 'mm/day' : 'mm/h'}
+              points={weather?.points ?? []}
+              pickMetric={(point) => point.rain.value}
               loading={loading}
-              updatedAt={weather?.rain.updatedAt}
             />
           </div>
         </section>
@@ -403,27 +508,21 @@ function App() {
 
         <section className="col-12 col-lg-3">
           <div className="metric-stack d-grid gap-3">
-            <MetricCard
+            <MetricChartCard
               title="暑さ指数 (WBGT)"
-              value={weather ? formatValue(weather.wbgt.value) : '-'}
-              unit={weather?.wbgt.unit ?? 'degC'}
+              unit="degC"
+              points={weather?.points ?? []}
+              pickMetric={(point) => point.wbgt.value}
               loading={loading}
-              updatedAt={weather?.wbgt.updatedAt}
             />
-            <MetricCard
+            <MetricChartCard
               title="風速"
-              value={weather ? formatValue(weather.windSpeed.value) : '-'}
-              unit={weather?.windSpeed.unit ?? 'm/s'}
+              unit="m/s"
+              points={weather?.points ?? []}
+              pickMetric={(point) => point.windSpeed.value}
               loading={loading}
-              updatedAt={weather?.windSpeed.updatedAt}
             />
-            <MetricCard
-              title="風向"
-              value={weather ? toDirectionLabel(weather.windDirection.value) : '-'}
-              unit=""
-              loading={loading}
-              updatedAt={weather?.windDirection.updatedAt}
-            />
+            <WindDirectionCard points={weather?.points ?? []} loading={loading} />
           </div>
         </section>
       </main>
@@ -431,21 +530,138 @@ function App() {
   );
 }
 
-type MetricCardProps = {
+type MetricChartCardProps = {
   title: string;
-  value: string;
   unit: string;
+  points: ForecastPoint[];
+  pickMetric: (point: ForecastPoint) => number | null;
   loading: boolean;
-  updatedAt?: string;
 };
 
-function MetricCard({ title, value, unit, loading, updatedAt }: MetricCardProps) {
+function MetricChartCard({ title, unit, points, pickMetric, loading }: MetricChartCardProps) {
+  const labels = points.map((point) => point.label);
+  const values = points.map((point) => pickMetric(point));
+  const latestValue = [...values].reverse().find((value) => value !== null) ?? null;
+  const hasData = values.some((value) => value !== null);
+
+  const chartData = {
+    labels,
+    datasets: [
+      {
+        data: values,
+        borderColor: '#1f7fbf',
+        backgroundColor: 'rgba(31, 127, 191, 0.14)',
+        borderWidth: 2,
+        pointRadius: 3,
+        pointHoverRadius: 4,
+        pointBackgroundColor: '#0f2d46',
+        tension: 0.25,
+        fill: true,
+        spanGaps: false,
+      },
+    ],
+  };
+
+  const chartOptions: ChartOptions<'line'> = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: {
+        display: false,
+      },
+      tooltip: {
+        callbacks: {
+          label: (context) => {
+            const value = context.parsed.y;
+            return `${formatValue(typeof value === 'number' ? value : null)} ${unit}`;
+          },
+        },
+      },
+    },
+    scales: {
+      x: {
+        grid: {
+          color: '#e1e8ef',
+        },
+        ticks: {
+          maxRotation: 0,
+          autoSkip: true,
+          color: '#607283',
+          font: {
+            size: 10,
+          },
+        },
+      },
+      y: {
+        grid: {
+          color: '#e1e8ef',
+        },
+        ticks: {
+          color: '#607283',
+          font: {
+            size: 10,
+          },
+        },
+      },
+    },
+  };
+
   return (
     <article className="card metric-card shadow-sm p-3 p-md-4">
       <h2 className="section-title">{title}</h2>
-      <p className="metric-value mt-3 mb-1">{loading ? '読み込み中...' : value}</p>
-      <p className="metric-unit mb-2">{unit}</p>
-      <p className="metric-updated mb-0">更新時刻: {updatedAt ?? '-'}</p>
+      {loading ? (
+        <p className="metric-updated mt-3 mb-0">読み込み中...</p>
+      ) : (
+        <>
+          <p className="metric-updated mt-2 mb-2">最新: {formatValue(latestValue)} {unit}</p>
+          {hasData ? (
+            <div className="chartjs-wrap">
+              <Line data={chartData} options={chartOptions} />
+            </div>
+          ) : (
+            <p className="metric-updated mb-0">グラフ表示データなし</p>
+          )}
+        </>
+      )}
+    </article>
+  );
+}
+
+type WindDirectionCardProps = {
+  points: ForecastPoint[];
+  loading: boolean;
+};
+
+function WindDirectionCard({ points, loading }: WindDirectionCardProps) {
+  const hasData = points.some((point) => point.windDirection.value !== null);
+
+  return (
+    <article className="card metric-card shadow-sm p-3 p-md-4">
+      <h2 className="section-title">風向</h2>
+      {loading ? (
+        <p className="metric-updated mt-3 mb-0">読み込み中...</p>
+      ) : hasData ? (
+        <div className="wind-row mt-3">
+          {points.map((point) => {
+            const value = point.windDirection.value;
+            return (
+              <div className="wind-item" key={`wind-${point.label}`}>
+                <p className="wind-label mb-1">{point.label}</p>
+                {value === null ? (
+                  <p className="wind-empty mb-1">-</p>
+                ) : (
+                  <span className="wind-arrow" style={{ transform: `rotate(${value}deg)` }}>
+                    ↑
+                  </span>
+                )}
+                <p className="wind-dir mb-0">{toDirectionLabel(value)}</p>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="metric-updated mt-3 mb-0">風向データなし</p>
+      )}
     </article>
   );
 }
