@@ -1,0 +1,47 @@
+.dashboard-shell {
+  min-height: 100vh;
+}
+
+.dashboard-header {
+  background: #ffffff;
+  border: 1px solid #d3dbe3;
+}
+
+.metric-card {
+  border: 1px solid #d3dbe3;
+  border-radius: 0.8rem;
+}
+
+.section-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.metric-value {
+  font-size: clamp(1.5rem, 4vw, 2.2rem);
+  font-weight: 800;
+  line-height: 1.1;
+  color: #0f2d46;
+}
+
+.metric-unit,
+.metric-updated {
+  margin: 0;
+  color: #586a7a;
+  font-size: 0.9rem;
+}
+
+.pdf-frame-wrap {
+  height: min(72vh, 760px);
+  border: 1px dashed #b6c3cf;
+  border-radius: 0.6rem;
+  overflow: hidden;
+  background: #f7fafc;
+}
+
+.pdf-frame {
+  width: 100%;
+  height: 100%;
+  border: none;
+}

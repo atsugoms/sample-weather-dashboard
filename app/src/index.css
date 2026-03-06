@@ -1,0 +1,28 @@
+:root {
+  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo', sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  color: #1d2e3f;
+  background-color: #eef4f8;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background:
+    radial-gradient(circle at 0% 0%, #d6ebfb 0, transparent 45%),
+    radial-gradient(circle at 100% 0%, #d9f7f0 0, transparent 40%),
+    #eef4f8;
+}
+
+#root {
+  min-height: 100vh;
+}
